@@ -20,6 +20,7 @@ using namespace glow;
 std::set<std::string> glow::backendTestBlacklist = {
     "AdaptiveAvgPool/0",
     "AdaptiveAvgPoolNonSquare/0",
+    "batchedPairwiseDotProduct/0",
     "batchedReduceMinMultiAxis_Float/0",
     "batchedReduceMinMultiAxis_Int32/0",
     "batchedReduceMinMultiAxis_Int64/0",
@@ -52,6 +53,9 @@ std::set<std::string> glow::backendTestBlacklist = {
     "GroupConv3D/0",
     "ChannelwiseQuantizedGroupConvolution/0",
     "insertTensorTest/0",
+    "insertTensorTest3D/0",
+    "insertTensorCrossDimensions/0",
+    "insertTensorPartialSliceInnerDim/0",
     "Int16ConvolutionDepth10/0",
     "Int16ConvolutionDepth8/0",
     "Int8AdaptiveAvgPool/0",

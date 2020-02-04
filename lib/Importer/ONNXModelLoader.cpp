@@ -152,78 +152,57 @@ Error setTensorType(const ONNX_NAMESPACE::TypeProto &in, Tensor *T) {
   return Error::success();
 }
 
-/// Given a string \p str containing the name of an ElemKind from
-/// Type::getElementName, returns the corresponding ElemKind or Error if a
-/// mapping couldn't be found.
-Expected<ElemKind> parseElemKindStr(const std::string &str) {
-  if (str == Type::getElementName(ElemKind::FloatTy)) {
-    return ElemKind::FloatTy;
-  } else if (str == Type::getElementName(ElemKind::Float16Ty)) {
-    return ElemKind::Float16Ty;
-  } else if (str == Type::getElementName(ElemKind::Int8QTy)) {
-    return ElemKind::Int8QTy;
-  } else if (str == Type::getElementName(ElemKind::UInt8QTy)) {
-    return ElemKind::UInt8QTy;
-  } else if (str == Type::getElementName(ElemKind::Int16QTy)) {
-    return ElemKind::Int16QTy;
-  } else if (str == Type::getElementName(ElemKind::Int32QTy)) {
-    return ElemKind::Int32QTy;
-  } else if (str == Type::getElementName(ElemKind::Int32ITy)) {
-    return ElemKind::Int32ITy;
-  } else if (str == Type::getElementName(ElemKind::Int64ITy)) {
-    return ElemKind::Int64ITy;
-  } else if (str == Type::getElementName(ElemKind::UInt8FusedQTy)) {
-    return ElemKind::UInt8FusedQTy;
-  } else if (str == Type::getElementName(ElemKind::UInt8FusedFP16QTy)) {
-    return ElemKind::UInt8FusedFP16QTy;
-  } else if (str == Type::getElementName(ElemKind::UInt4FusedFP16QTy)) {
-    return ElemKind::UInt4FusedFP16QTy;
-  } else if (str == Type::getElementName(ElemKind::BoolTy)) {
-    return ElemKind::BoolTy;
-  } else {
-    return MAKE_ERR(strFormat("Invalid ElemKind string: %s", str.c_str()));
-  }
-}
-
-/// Given a docstring encoding \p str of a quantized type and its dimension \p
+/// Given a docstring encoding \p str of a type and its dimension \p
 /// dims, parses the string and \returns a Glow Type from it or Error if parsing
-/// failed. Expected format of str is ElemKind:scale:offset.
-Expected<Type> parseQTypeFromDocString(const std::string &str,
-                                       llvm::ArrayRef<dim_t> dims) {
+/// failed. Expected format of str is either "ElemKind" or
+/// "ElemKind:scale:offset".
+Expected<Type> parseTypeFromDocString(const std::string &str,
+                                      llvm::ArrayRef<dim_t> dims) {
   size_t begin = 0;
 
-  // Get Elemkind string
+  float scale = 1.0;
+  int32_t offset = 0;
+
+  // Find Elemkind string
   size_t end = str.find(':', begin);
+
+  // If a ':' isn't found then assume the whole string is ElemKind (for
+  // backwards compatibility reasons) otherwise look for scale and offset
+  // strings.
+  std::string elemKindStr;
   if (end == std::string::npos) {
-    return MAKE_ERR("ElemKind not found");
+    elemKindStr = str.substr(0, str.size());
+  } else {
+    elemKindStr = str.substr(begin, end - begin);
+
+    // Get scale string.
+    begin = end + 1;
+    end = str.find(':', begin);
+    if (end == std::string::npos) {
+      return MAKE_ERR("scale not found");
+    }
+    std::string scaleStr = str.substr(begin, end - begin);
+
+    // Get offset string.
+    begin = end + 1;
+    end = str.size();
+    if (end - begin == 0) {
+      return MAKE_ERR("offset not found");
+    }
+
+    std::string offsetStr = str.substr(begin, end - begin);
+
+    scale = std::stof(scaleStr);
+    offset = std::stoi(offsetStr);
   }
-  std::string elemKindStr = str.substr(begin, end - begin);
 
-  begin = end + 1;
+  ElemKind elemKind = Type::getElementKindFromName(elemKindStr);
 
-  // Get scale and offset strings
-  end = str.find(':', begin);
-  if (end == std::string::npos) {
-    return MAKE_ERR("scale not found");
+  if (isQuantizedElemKind(elemKind)) {
+    return Type(elemKind, dims, scale, offset);
+  } else {
+    return Type(elemKind, dims);
   }
-  std::string scaleStr = str.substr(begin, end - begin);
-
-  begin = end + 1;
-  end = str.size();
-
-  if (end - begin == 0) {
-    return MAKE_ERR("offset not found");
-  }
-
-  std::string offsetStr = str.substr(begin, end - begin);
-
-  ElemKind elemKind;
-  ASSIGN_VALUE_OR_RETURN_ERR(elemKind, parseElemKindStr(elemKindStr));
-
-  float scale = std::stof(scaleStr);
-  int32_t offset = std::stoi(offsetStr);
-
-  return Type(elemKind, dims, scale, offset);
 }
 } // namespace
 
@@ -295,7 +274,7 @@ Error glow::loadTensor(const ONNX_NAMESPACE::TensorProto &in, Tensor *T) {
   } else if (in.data_type() == ONNX_NAMESPACE::TensorProto::INT8) {
     Type ty;
     ASSIGN_VALUE_OR_RETURN_ERR(ty,
-                               parseQTypeFromDocString(in.doc_string(), dim));
+                               parseTypeFromDocString(in.doc_string(), dim));
     T->reset(ty);
 
     if (in.has_raw_data()) {
@@ -306,9 +285,16 @@ Error glow::loadTensor(const ONNX_NAMESPACE::TensorProto &in, Tensor *T) {
                  ErrorValue::ErrorCode::MODEL_LOADER_UNSUPPORTED_DATATYPE);
     }
   } else if (in.data_type() == ONNX_NAMESPACE::TensorProto::INT32) {
-    // There are few cases when we will have int32 tensors. For example, the
-    // second output of Concat from Caffe2 concat op is int32
-    T->reset(ElemKind::Int32ITy, dim);
+    if (in.has_doc_string()) {
+      Type ty;
+      ASSIGN_VALUE_OR_RETURN_ERR(ty,
+                                 parseTypeFromDocString(in.doc_string(), dim));
+      T->reset(ty);
+    } else {
+      // There are few cases when we will have int32 tensors. For example, the
+      // second output of Concat from Caffe2 concat op is int32
+      T->reset(ElemKind::Int32ITy, dim);
+    }
 
     if (in.int32_data_size() > 0) {
       auto TH = T->getHandle<int32_t>();
@@ -326,7 +312,7 @@ Error glow::loadTensor(const ONNX_NAMESPACE::TensorProto &in, Tensor *T) {
   } else if (in.data_type() == ONNX_NAMESPACE::TensorProto::UINT8) {
     Type ty;
     ASSIGN_VALUE_OR_RETURN_ERR(ty,
-                               parseQTypeFromDocString(in.doc_string(), dim));
+                               parseTypeFromDocString(in.doc_string(), dim));
     T->reset(ty);
 
     if (in.has_raw_data()) {
@@ -848,6 +834,45 @@ Error ONNXModelLoader::loadConv(const ONNX_NAMESPACE::NodeProto &op,
 
   return Error::success();
 }
+
+Error ONNXModelLoader::loadTensorwiseQuantizedConvolution(
+    const ONNX_NAMESPACE::NodeProto &op, const ArgumentDictionaryTy &dict) {
+  const std::string &opName = loadOperatorName(op);
+
+  NodeValue input;
+  ASSIGN_VALUE_OR_RETURN_ERR(input, getNodeValueByName(op.input(0)));
+  NodeValue filterValue;
+  ASSIGN_VALUE_OR_RETURN_ERR(filterValue, getNodeValueByName(op.input(1)));
+  NodeValue biasValue;
+  ASSIGN_VALUE_OR_RETURN_ERR(biasValue, getNodeValueByName(op.input(2)));
+
+  auto kernels = getShape<unsigned_t>(dict.at("kernel_shape"));
+  auto strides = getShape<unsigned_t>(dict.at("strides"));
+  auto pads = getShape<unsigned_t>(dict.at("pads"));
+  unsigned_t groups;
+  ASSIGN_VALUE_OR_RETURN_ERR(groups, loadInt(dict.at("group")));
+  unsigned_t dilation;
+  ASSIGN_VALUE_OR_RETURN_ERR(dilation, loadInt(dict.at("group")));
+
+  float outScale;
+  ASSIGN_VALUE_OR_RETURN_ERR(outScale, loadFloat(dict.at("out_scale")));
+  int32_t outOffset;
+  ASSIGN_VALUE_OR_RETURN_ERR(outOffset, loadInt(dict.at("out_offset")));
+
+  ShapeNHWC idim(input.dims());
+  auto outSz =
+      calculateConvPoolOutputDims(idim.h, idim.w, kernels, strides, pads);
+  std::array<dim_t, 4> outDims = {
+      {idim.n, outSz.first, outSz.second, biasValue.dims()[0]}};
+  auto outTy = G_.getParent()->uniqueType(ElemKind::Int8QTy, outDims, outScale,
+                                          outOffset);
+
+  auto *node = G_.createConv(opName, input, filterValue, biasValue, outTy,
+                             kernels, strides, pads, groups);
+
+  return addNodeAsOutput(op, node);
+}
+
 Error ONNXModelLoader::loadChannelwiseQuantizedConvolution(
     const ONNX_NAMESPACE::NodeProto &op, const ArgumentDictionaryTy &dict) {
   const std::string &opName = loadOperatorName(op);
@@ -2002,8 +2027,7 @@ Error ONNXModelLoader::loadQuantize(const ONNX_NAMESPACE::NodeProto &op,
   std::string elemKindStr;
   ASSIGN_VALUE_OR_RETURN_ERR(elemKindStr, loadStr(dict.at("elem_kind")));
 
-  ElemKind elemKind;
-  ASSIGN_VALUE_OR_RETURN_ERR(elemKind, parseElemKindStr(elemKindStr));
+  ElemKind elemKind = Type::getElementKindFromName(elemKindStr);
 
   auto outDims = in.getType()->dims();
   auto outTy = G_.getParent()->uniqueType(elemKind, outDims, scale, offset);
@@ -2443,7 +2467,13 @@ Error ONNXModelLoader::loadOperator(const ONNX_NAMESPACE::NodeProto &op) {
     return loadSlice(op, dict);
   }
   if (typeName == "Conv") {
-    return loadConv(op, dict);
+    // If the Conv operator has quantized inputs, use
+    // loadTensorwiseQuantizedConvolution.
+    NodeValue in;
+    ASSIGN_VALUE_OR_RETURN_ERR(in, getNodeValueByName(op.input(0)));
+    return in.getType()->isQuantizedType()
+               ? loadTensorwiseQuantizedConvolution(op, dict)
+               : loadConv(op, dict);
   }
   if (typeName == "ChannelwiseQuantizedConvolution") {
     return loadChannelwiseQuantizedConvolution(op, dict);

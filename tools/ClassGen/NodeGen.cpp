@@ -676,6 +676,19 @@ int main(int argc, char **argv) {
                     "each element in the output is the corresponding element "
                     "in the input data modulo Divisor.");
 
+  BB.newNode("BatchedPairwiseDotProduct")
+      .addMember(MemberType::VectorNodeValue, "Inputs")
+      .addResultFromCtorArg()
+      .setDocstring(
+          "Performs batched pairwise dot products of the input vectors");
+
+  BB.newNode("BatchedPairwiseDotProductGrad")
+      .addInput("OutputGrad")
+      .hasExtraResults()
+      .addMember(MemberType::VectorNodeValue, "OriginalInputs")
+      .setDocstring(
+          "Performs the gradient operation for BatchedPairwiseDotProduct");
+
   //===--------------------------------------------------------------------===//
   //                Non-linearities
   //===--------------------------------------------------------------------===//
@@ -983,6 +996,7 @@ int main(int argc, char **argv) {
   BB.newNode("ConvertTo")
       .addInput("Input")
       .addResultFromCtorArg()
+      .dataParallel()
       .setDocstring(
           "Convert the input from its current type to the destination "
           "type. The input and output types must have the same shapes. "

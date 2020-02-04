@@ -2491,9 +2491,9 @@ ChannelwiseQuantizedConvolutionNode *Function::createChannelwiseQuantizedConv(
   if (biasType == ElemKind::Int32QTy) {
     // Nothing to do
   } else if (biasType == ElemKind::FloatTy) {
-    auto biasType = getParent()->uniqueType(glow::ElemKind::Int32QTy,
-                                            bias.dims(), outTy->getScale(), 0);
-    bias = createQuantize("quantized_bias", bias, biasType);
+    auto biasTy = getParent()->uniqueType(glow::ElemKind::Int32QTy, bias.dims(),
+                                          outTy->getScale(), 0);
+    bias = createQuantize("quantized_bias", bias, biasTy);
   } else {
     LOG(DFATAL)
         << "Unsupported element type for ChannelwiseQuantizedConvolution bias: "
@@ -2556,6 +2556,18 @@ Node *Function::createDotProduct(llvm::StringRef name, NodeValue X,
 
   // Create and return BatchedReduceAdd node.
   return createBatchedReduceAdd(name.str() + ".bra", MN, 1);
+}
+
+BatchedPairwiseDotProductNode *
+Function::createBatchedPairwiseDotProduct(llvm::StringRef name,
+                                          llvm::ArrayRef<NodeValue> inputs) {
+  assert(!inputs.empty());
+  size_t batchCount = inputs[0].getType()->dims()[0];
+  size_t numPairs = inputs.size() * (inputs.size() - 1) / 2;
+  auto *outTy = getParent()->uniqueTypeWithNewShape(inputs[0].getType(),
+                                                    {batchCount, numPairs});
+
+  return addNode(new BatchedPairwiseDotProductNode(name, outTy, inputs));
 }
 
 Node *Function::createElementwiseLinear(llvm::StringRef name, NodeValue X,
