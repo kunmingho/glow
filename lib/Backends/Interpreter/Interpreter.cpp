@@ -64,8 +64,11 @@ Interpreter::compileIRWithoutConstants(std::unique_ptr<IRFunction> IR) const {
   runtime::RuntimeBundle bundle = runtime::RuntimeBundle::create(
       *IR, constantWeightsAllocator, placeholderWeightsAllocator,
       activationsAllocator);
-  return glow::make_unique<InterpreterFunction>(std::move(IR),
-                                                std::move(bundle));
+  auto compiledFunction =
+      glow::make_unique<InterpreterFunction>(std::move(IR), std::move(bundle));
+  compiledFunction->setIRInstructionProcessingHandler(
+      getIRInstructionProcessingHandler());
+  return compiledFunction;
 }
 
 bool Interpreter::isOpSupported(const NodeInfo &NI) const {
@@ -122,13 +125,13 @@ bool Interpreter::isOpSupported(const NodeInfo &NI) const {
     return NI.allInputsAndOutputsHaveSameElemKind(
                {ElemKind::FloatTy, ElemKind::Float16Ty, ElemKind::Int8QTy}, {},
                {MaxPoolNode::ArgmaxIdx}) &&
-           (NI.getOutElemTy(MaxPoolNode::ArgmaxIdx) == IndexElemKind);
+           (NI.getOutElemTy(MaxPoolNode::ArgmaxIdx) == ElemKind::Int64ITy);
 
   case Kinded::Kind::ArgMaxNodeKind:
     return NI.allInputsAndOutputsHaveSameElemKind(
                {ElemKind::FloatTy, ElemKind::Int8QTy}, {},
                {ArgMaxNode::ArgmaxIdx}) &&
-           (NI.getOutElemTy(ArgMaxNode::ArgmaxIdx) == IndexElemKind);
+           (NI.getOutElemTy(ArgMaxNode::ArgmaxIdx) == ElemKind::Int64ITy);
 
   case Kinded::Kind::PowNodeKind:
   case Kinded::Kind::LocalResponseNormalizationNodeKind:
@@ -233,6 +236,10 @@ bool Interpreter::isOpSupported(const NodeInfo &NI) const {
             (NI.getInElemTy(Convolution3DNode::BiasIdx) == ElemKind::Int16QTy ||
              NI.getInElemTy(Convolution3DNode::BiasIdx) == ElemKind::Int32QTy));
 
+  case Kinded::Kind::ConvTransposeNodeKind:
+    // TODO - support other types.
+    return NI.allInputsAndOutputsHaveSameElemKind({ElemKind::FloatTy});
+
   case Kinded::Kind::BatchedAddNodeKind:
     if (!NI.getInTy(BatchedAddNode::BatchIdx)->isQuantizedType()) {
       return NI.allInputsAndOutputsHaveSameElemKind(
@@ -269,7 +276,7 @@ bool Interpreter::isOpSupported(const NodeInfo &NI) const {
                {SparseLengthsSumNode::IndicesIdx,
                 SparseLengthsSumNode::LengthsIdx}) &&
            (NI.getInElemTy(SparseLengthsSumNode::IndicesIdx) ==
-            IndexElemKind) &&
+            ElemKind::Int64ITy) &&
            (NI.getInElemTy(SparseLengthsSumNode::LengthsIdx) ==
             ElemKind::Int32ITy);
 
@@ -279,7 +286,7 @@ bool Interpreter::isOpSupported(const NodeInfo &NI) const {
                {SparseLengthsWeightedSumNode::IndicesIdx,
                 SparseLengthsWeightedSumNode::LengthsIdx}) &&
            (NI.getInElemTy(SparseLengthsWeightedSumNode::IndicesIdx) ==
-            IndexElemKind) &&
+            ElemKind::Int64ITy) &&
            (NI.getInElemTy(SparseLengthsWeightedSumNode::LengthsIdx) ==
             ElemKind::Int32ITy);
 
@@ -287,8 +294,9 @@ bool Interpreter::isOpSupported(const NodeInfo &NI) const {
     return NI.allInputsAndOutputsHaveSameElemKind(
                {ElemKind::FloatTy, ElemKind::Float16Ty},
                {EmbeddingBagNode::IndicesIdx, EmbeddingBagNode::OffsetsIdx}) &&
-           (NI.getInElemTy(EmbeddingBagNode::IndicesIdx) == IndexElemKind) &&
-           (NI.getInElemTy(EmbeddingBagNode::OffsetsIdx) == IndexElemKind);
+           (NI.getInElemTy(EmbeddingBagNode::IndicesIdx) ==
+            ElemKind::Int64ITy) &&
+           (NI.getInElemTy(EmbeddingBagNode::OffsetsIdx) == ElemKind::Int64ITy);
 
   case Kinded::Kind::SparseLengthsWeightedSumGradNodeKind:
     // GradOfInputNamedIndicesIdx and GradOfInputNamedLengthsIdx do not need to
@@ -301,7 +309,7 @@ bool Interpreter::isOpSupported(const NodeInfo &NI) const {
                 SparseLengthsWeightedSumGradNode::
                     GradOfInputNamedLengthsIdx}) &&
            (NI.getInElemTy(SparseLengthsWeightedSumGradNode::IndicesIdx) ==
-            IndexElemKind) &&
+            ElemKind::Int64ITy) &&
            (NI.getInElemTy(SparseLengthsWeightedSumGradNode::LengthsIdx) ==
             ElemKind::Int32ITy);
 
@@ -316,16 +324,16 @@ bool Interpreter::isOpSupported(const NodeInfo &NI) const {
             ElemKind::UInt8QTy) &&
            (NI.getInElemTy(
                 RowwiseQuantizedSparseLengthsWeightedSumNode::IndicesIdx) ==
-            IndexElemKind) &&
+            ElemKind::Int64ITy) &&
            (NI.getInElemTy(
                 RowwiseQuantizedSparseLengthsWeightedSumNode::LengthsIdx) ==
             ElemKind::Int32ITy);
 
   case Kinded::Kind::EmbeddingBagByteRowwiseOffsetsNodeKind: {
     if (NI.getInElemTy(EmbeddingBagByteRowwiseOffsetsNode::IndicesIdx) !=
-            IndexElemKind ||
+            ElemKind::Int64ITy ||
         NI.getInElemTy(EmbeddingBagByteRowwiseOffsetsNode::OffsetsIdx) !=
-            IndexElemKind) {
+            ElemKind::Int64ITy) {
       return false;
     }
 
@@ -349,7 +357,7 @@ bool Interpreter::isOpSupported(const NodeInfo &NI) const {
   case Kinded::Kind::FusedRowwiseQuantizedSparseLengthsWeightedSumNodeKind: {
     if (NI.getInElemTy(
             FusedRowwiseQuantizedSparseLengthsWeightedSumNode::IndicesIdx) !=
-            IndexElemKind ||
+            ElemKind::Int64ITy ||
         NI.getInElemTy(
             FusedRowwiseQuantizedSparseLengthsWeightedSumNode::LengthsIdx) !=
             ElemKind::Int32ITy) {
@@ -418,10 +426,10 @@ bool Interpreter::isOpSupported(const NodeInfo &NI) const {
                {MaxPoolGradNode::OriginalOutputForArgmaxIdx,
                 MaxPoolGradNode::GradOfOriginalOutputNamedArgmaxIdx}) &&
            (NI.getInElemTy(MaxPoolGradNode::OriginalOutputForArgmaxIdx) ==
-            IndexElemKind) &&
+            ElemKind::Int64ITy) &&
            (NI.getInElemTy(
                 MaxPoolGradNode::GradOfOriginalOutputNamedArgmaxIdx) ==
-            IndexElemKind);
+            ElemKind::Int64ITy);
 
   case Kinded::Kind::QuantizeNodeKind:
     return ((NI.getInElemTy(QuantizeNode::InputIdx) == ElemKind::FloatTy) ||
@@ -467,10 +475,12 @@ bool Interpreter::isOpSupported(const NodeInfo &NI) const {
     return NI.allInputsAndOutputsHaveSameElemKind(
                {ElemKind::FloatTy, ElemKind::Float16Ty, ElemKind::Int8QTy}, {},
                {TopKNode::IndicesIdx}) &&
-           (NI.getOutElemTy(TopKNode::IndicesIdx) == IndexElemKind);
+           ((NI.getOutElemTy(TopKNode::IndicesIdx) == ElemKind::Int64ITy) ||
+            (NI.getOutElemTy(TopKNode::IndicesIdx) == ElemKind::Int32ITy));
 
   case Kinded::Kind::ScatterDataNodeKind:
-    return (NI.getInElemTy(ScatterDataNode::IndicesIdx) == IndexElemKind) &&
+    return (NI.getInElemTy(ScatterDataNode::IndicesIdx) ==
+            ElemKind::Int64ITy) &&
            (NI.getOutElemTy(ScatterDataNode::ResultIdx) ==
             NI.getInElemTy(ScatterDataNode::DataIdx)) &&
            (NI.getOutElemTy(ScatterDataNode::ResultIdx) ==
@@ -496,7 +506,8 @@ bool Interpreter::isOpSupported(const NodeInfo &NI) const {
     return NI.allInputsAndOutputsHaveSameElemKind(
                {ElemKind::FloatTy, ElemKind::Float16Ty},
                {CrossEntropyLossNode::LabelsIdx}) &&
-           (NI.getInElemTy(CrossEntropyLossNode::LabelsIdx) == IndexElemKind);
+           (NI.getInElemTy(CrossEntropyLossNode::LabelsIdx) ==
+            ElemKind::Int64ITy);
 
   case Kinded::Kind::CumSumNodeKind:
     return NI.allInputsAndOutputsHaveSameElemKind(
@@ -513,11 +524,12 @@ bool Interpreter::isOpSupported(const NodeInfo &NI) const {
     return NI.allInputsAndOutputsHaveSameElemKind(
                {ElemKind::FloatTy, ElemKind::Float16Ty},
                {SparseToDenseNode::IndicesIdx}) &&
-           (NI.getInElemTy(SparseToDenseNode::IndicesIdx) == IndexElemKind);
+           (NI.getInElemTy(SparseToDenseNode::IndicesIdx) ==
+            ElemKind::Int64ITy);
 
   case Kinded::Kind::SparseToDenseMaskNodeKind:
     return (NI.getInElemTy(SparseToDenseMaskNode::IndicesIdx) ==
-            IndexElemKind) &&
+            ElemKind::Int64ITy) &&
            (NI.getInElemTy(SparseToDenseMaskNode::LengthsIdx) ==
             ElemKind::Int32ITy) &&
            (NI.getInElemTy(SparseToDenseMaskNode::ValuesIdx) ==
@@ -558,7 +570,7 @@ bool Interpreter::isOpSupported(const NodeInfo &NI) const {
     return NI.allInputsAndOutputsHaveSameElemKind(
                {ElemKind::FloatTy}, {SoftMaxGradNode::SelectedIdx},
                {SoftMaxGradNode::GradOfInputNamedSelectedIdx}) &&
-           (NI.getInElemTy(SoftMaxGradNode::SelectedIdx) == IndexElemKind);
+           (NI.getInElemTy(SoftMaxGradNode::SelectedIdx) == ElemKind::Int64ITy);
 
   case Kinded::Kind::ConvolutionGradNodeKind:
     return NI.allInputsAndOutputsHaveSameElemKind(
@@ -570,10 +582,10 @@ bool Interpreter::isOpSupported(const NodeInfo &NI) const {
                {ElemKind::FloatTy}, {CrossEntropyLossGradNode::LabelsIdx},
                {CrossEntropyLossGradNode::GradOfInputNamedLabelsIdx}) &&
            (NI.getInElemTy(CrossEntropyLossGradNode::LabelsIdx) ==
-            IndexElemKind) &&
+            ElemKind::Int64ITy) &&
            (NI.getOutElemTy(
                 CrossEntropyLossGradNode::GradOfInputNamedLabelsIdx) ==
-            IndexElemKind);
+            ElemKind::Int64ITy);
 
   case Kinded::Kind::BatchedPairwiseDotProductNodeKind:
     return NI.allInputsAndOutputsHaveSameElemKind({ElemKind::FloatTy});
@@ -679,4 +691,76 @@ bool Interpreter::shouldLower(const Node *N) const {
   default:
     return true;
   }
+}
+
+/// Channelwise quantize the given float \p bias as int32 using \p inputScale,
+/// per-channel \p scales and \p offsets. \returns false if the bias was already
+/// quantized and thus no change was made and true otherwise.
+static bool channelwiseQuantizeFloatBias(
+    Function *F, ChannelwiseQuantizedConvolutionNode &channelwiseConv) {
+  // If bias is already quantized then quit.
+  if (channelwiseConv.getBias().getElementType() == ElemKind::Int32QTy) {
+    return false;
+  }
+
+  assert(channelwiseConv.getBias().getElementType() == ElemKind::FloatTy &&
+         "Bias type must be a float in order to quantize it.");
+
+  auto *inType = channelwiseConv.getInput().getType();
+
+  Constant *biasC =
+      llvm::dyn_cast<Constant>(channelwiseConv.getBias().getNode());
+  assert(biasC && "bias input to ChannelwiseQuantizedConvolutionNode "
+                  "must be a Constant in order to quantize the bias");
+
+  Constant *scalesC =
+      llvm::dyn_cast<Constant>(channelwiseConv.getScales().getNode());
+  assert(scalesC && "scales input to ChannelwiseQuantizedConvolutionNode must "
+                    "be a Constant in order to quantize the bias");
+
+  const auto &biasUnquantizedH = biasC->getPayload().getHandle<float>();
+  const auto &scalesH = scalesC->getPayload().getHandle<float>();
+
+  // biasQuantizedT is Int32QTy but the quantization parameters on the tensor
+  // are not real, instead quantization parameters are from scales and offsets
+  // inputs.
+  auto biasQuantizedT = Tensor(ElemKind::Int32QTy, biasUnquantizedH.dims(),
+                               /* scale */ 1.0, /* offset */ 0);
+  auto biasQuantizedH = biasQuantizedT.getHandle<int32_t>();
+
+  for (dim_t i = 0; i < biasQuantizedH.size(); ++i) {
+    TensorQuantizationParams tqp;
+    tqp.scale = inType->getScale() * scalesH.raw(i);
+    tqp.offset = 0;
+    biasQuantizedH.raw(i) =
+        quantization::quantize<int32_t>(biasUnquantizedH.raw(i), tqp);
+  }
+
+  auto biasQuantizedC = F->getParent()->createConstant(
+      biasC->getName(), std::move(biasQuantizedT));
+
+  auto newChannelwiseConv = F->createChannelwiseQuantizedConv(
+      channelwiseConv.getName(), channelwiseConv.getInput(),
+      channelwiseConv.getFilter(), biasQuantizedC, channelwiseConv.getScales(),
+      channelwiseConv.getOffsets(), channelwiseConv.getResult().getType(),
+      channelwiseConv.getKernels(), channelwiseConv.getStrides(),
+      channelwiseConv.getPads(), channelwiseConv.getGroup());
+
+  channelwiseConv.getResult().replaceAllUsesOfWith(newChannelwiseConv);
+  return true;
+}
+
+bool Interpreter::transformPostLowering(
+    Function *F, CompilationContext &cctx,
+    const glow::runtime::DeviceInfo *devInfo) const {
+  LOG_SCOPE(F->getLogContext(), "Interpreter::transformPostLowering")
+
+  bool changed = false;
+  for (auto &node : F->getNodes()) {
+    if (auto *channelwiseConv =
+            llvm::dyn_cast<ChannelwiseQuantizedConvolutionNode>(&node)) {
+      changed |= channelwiseQuantizeFloatBias(F, *channelwiseConv);
+    }
+  }
+  return changed;
 }

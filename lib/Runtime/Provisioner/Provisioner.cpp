@@ -212,7 +212,7 @@ Provisioner::generateDeviceAssignments(
   // Update nodes in logicalDevices with their assignments.
   for (auto &assignment : deviceAssignment) {
     for (auto &node : logicalDevices[assignment.first]) {
-      node->deviceIDs.push_back(assignment.second);
+      node->deviceRuntimeInfos[assignment.second] = DeviceRuntimeInfo();
     }
   }
   return deviceAssignment;
@@ -347,6 +347,14 @@ Error Provisioner::provision(DAGListTy &networks, Module &module,
           return MAKE_ERR(ErrorValue::ErrorCode::RUNTIME_DEVICE_NOT_FOUND,
                           "Unable to find device of type: " +
                               deviceBackendName);
+        }
+
+        if (cctx.dumpFinalGraph) {
+          auto fname =
+              strFormat("final_graph_%s_%s.dot", deviceBackendName.c_str(),
+                        function->getName().str().c_str());
+          LOG(INFO) << "Dumping final graph to " << fname;
+          function->dumpDAG(fname);
         }
 
         auto compiledOrErr =
@@ -528,14 +536,16 @@ Error Provisioner::removeFunction(llvm::StringRef name) {
 }
 
 Error Provisioner::evictFunction(llvm::StringRef name, DeviceIDTy device) {
-  std::promise<Error> evictPromise;
+  std::promise<void> evictPromise;
+  Error evictErr = Error::empty();
   auto done = evictPromise.get_future();
-  std::unique_ptr<Error> evictErr;
-  devices_[device]->evictNetwork(name, [&evictPromise](std::string, Error err) {
-    evictPromise.set_value(std::move(err));
-  });
-  Error err = done.get();
-  return err;
+  devices_[device]->evictNetwork(
+      name, [&evictPromise, &evictErr](std::string, Error err) {
+        evictErr = std::move(err);
+        evictPromise.set_value();
+      });
+  done.get();
+  return evictErr;
 }
 
 void Provisioner::cleanupProvision(

@@ -146,7 +146,8 @@ ProtobufLoader::getNodeValueByName(llvm::StringRef name) const {
 }
 
 Error ProtobufLoader::createAndRegisterConstant(llvm::StringRef name,
-                                                Tensor &&tensor) {
+                                                Tensor &&tensor,
+                                                const std::string &layout) {
   auto it = nodeValueByName_.find(name);
   if (it != nodeValueByName_.end()) {
     if (llvm::dyn_cast<Placeholder>(it->second.getNode())) {
@@ -156,7 +157,8 @@ Error ProtobufLoader::createAndRegisterConstant(llvm::StringRef name,
   }
   // Note: We do not support training from models loaded from protos, so
   // trainable is always set to false here.
-  Constant *node = G_.getParent()->createConstant(name, std::move(tensor));
+  Constant *node =
+      G_->getParent()->createConstant(name, std::move(tensor), layout);
   nodeValueByName_[name] = node->getOutput();
   return Error::success();
 }
@@ -177,18 +179,20 @@ void ProtobufLoader::deleteUnusedConstants() {
     auto *c = llvm::dyn_cast<Constant>(it->second.getNode());
     DCHECK(c) << "NodeValue with name " << name
               << " was expected to have been a Constant";
-    G_.getParent()->eraseConstant(c);
+    G_->getParent()->eraseConstant(c);
     nodeValueByName_.erase(it);
   }
 }
 
 Expected<Placeholder *>
 ProtobufLoader::createAndRegisterPlaceholder(llvm::StringRef name, TypeRef T,
-                                             bool isStatic) {
+                                             bool isStatic, bool isTrainable,
+                                             const std::string &layout) {
   RETURN_ERR_IF_NOT(
       !hasNodeByName(name),
       llvm::Twine("Creating an already existing node ", name).str());
-  Placeholder *node = G_.getParent()->createPlaceholder(T, name, false);
+  Placeholder *node =
+      G_->getParent()->createPlaceholder(T, name, isTrainable, layout);
   node->setStatic(isStatic);
   nodeValueByName_[name] = node->getOutput();
   return node;
@@ -199,7 +203,7 @@ bool ProtobufLoader::hasNodeByName(llvm::StringRef name) const {
 }
 
 ProtobufLoader::ProtobufLoader(llvm::ArrayRef<const char *> tensorNames,
-                               llvm::ArrayRef<TypeRef> types, Function &F,
+                               llvm::ArrayRef<TypeRef> types, Function *F,
                                Error *errPtr)
     : G_(F) {
   // Verify that the version of the library that we linked against is
